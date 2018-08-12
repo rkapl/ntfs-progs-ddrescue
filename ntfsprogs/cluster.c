@@ -38,10 +38,21 @@
 #include "utils.h"
 #include "logging.h"
 
+
+static int match_range(const struct range *rng, s64 start, s64 end)
+{
+	while (rng) {
+		if (! ((start >= rng->end) || (end <= rng->begin)))
+			return 1;
+		rng = rng->next;
+	}
+	return 0;
+}
+
 /**
  * cluster_find
  */
-int cluster_find(ntfs_volume *vol, LCN c_begin, LCN c_end, cluster_cb *cb, void *data)
+int cluster_find(ntfs_volume *vol, const struct range *rng, cluster_cb *cb, void *data)
 {
 	int j;
 	int result = -1;
@@ -103,7 +114,7 @@ int cluster_find(ntfs_volume *vol, LCN c_begin, LCN c_end, cluster_cb *cb, void 
 						(long long)runs[j].length);
 				//dprint list
 
-				if ((a_begin > c_end) || (a_end < c_begin))
+				if (!match_range(rng, a_begin, a_end))
 					continue;	// before or after search range
 
 				if ((*cb) (m_ctx->inode, a_ctx->attr, runs+j, data))

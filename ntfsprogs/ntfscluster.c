@@ -99,6 +99,48 @@ static void usage(void)
 	ntfs_log_info("%s%s\n", ntfs_bugs, ntfs_home);
 }
 
+static void parse_range_action(enum action act, const char *arg)
+{
+	struct range rng;
+	if (((opts.action == act_none) || (opts.action == act)) &&
+		(utils_parse_range(optarg, &rng.begin, &rng.end, FALSE))) {
+		opts.action = act;
+		rng.next = opts.range;
+		struct range *nrng = malloc(sizeof(rng));
+		if (!nrng) {
+			ntfs_log_error("!range malloc\n");
+		} else {
+			*nrng = rng;
+			opts.range = nrng;
+		}
+	} else {
+		opts.action = act_error;
+	}
+}
+
+static int check_ranges(struct range *rng)
+{
+	while (rng) {
+		if (rng->end < rng->begin)
+			return 0;
+		rng = rng->next;
+	}
+	return 1;
+}
+
+static void print_ranges(const char *name, struct range *rng)
+{
+	while (rng) {
+		if (rng->begin == rng->end)
+			ntfs_log_quiet("Searching for %s %llu\n", name,
+					(unsigned long long)rng->begin);
+		else
+			ntfs_log_quiet("Searching for %s range %llu-%llu\n", name,
+				(unsigned long long)rng->begin, (unsigned long long)rng->end);
+		rng = rng->next;
+	}
+}
+
 /**
  * parse_options - Read and validate the programs command line
  *
@@ -136,8 +178,7 @@ static int parse_options(int argc, char **argv)
 	opterr = 0; /* We'll handle the errors, thank you. */
 
 	opts.action      = act_none;
-	opts.range_begin = -1;
-	opts.range_end   = -1;
+	opts.range = NULL;
 
 	while ((c = getopt_long(argc, argv, sopt, lopt, NULL)) != -1) {
 		switch (c) {
@@ -151,11 +192,7 @@ static int parse_options(int argc, char **argv)
 			break;
 
 		case 'c':
-			if ((opts.action == act_none) &&
-			    (utils_parse_range(optarg, &opts.range_begin, &opts.range_end, FALSE)))
-				opts.action = act_cluster;
-			else
-				opts.action = act_error;
+			parse_range_action(act_cluster, optarg);
 			break;
 		case 'F':
 			if (opts.action == act_none) {
@@ -198,11 +235,7 @@ static int parse_options(int argc, char **argv)
 			ntfs_log_clear_levels(NTFS_LOG_LEVEL_QUIET);
 			break;
 		case 's':
-			if ((opts.action == act_none) &&
-			    (utils_parse_range(optarg, &opts.range_begin, &opts.range_end, FALSE)))
-				opts.action = act_sector;
-			else
-				opts.action = act_error;
+			parse_range_action(act_sector, optarg);
 			break;
 		case 'v':
 			opts.verbose++;
@@ -257,7 +290,7 @@ static int parse_options(int argc, char **argv)
 		if (opts.action == act_error) {
 			ntfs_log_error("You may only specify one action: --info, --cluster, --sector or --last.\n");
 			err++;
-		} else if (opts.range_begin > opts.range_end) {
+		} else if (!check_ranges(opts.range)) {
 			ntfs_log_error("The range must be in ascending order.\n");
 			err++;
 		}
@@ -484,6 +517,7 @@ int main(int argc, char *argv[])
 	ntfs_volume *vol;
 	ntfs_inode *ino = NULL;
 	struct match m;
+	struct range whole;
 	int res;
 	int result = 1;
 #ifdef HAVE_WINDOWS_H
@@ -505,23 +539,19 @@ int main(int argc, char *argv[])
 
 	switch (opts.action) {
 		case act_sector:
-			if (opts.range_begin == opts.range_end)
-				ntfs_log_quiet("Searching for sector %llu\n",
-						(unsigned long long)opts.range_begin);
-			else
-				ntfs_log_quiet("Searching for sector range %llu-%llu\n", (unsigned long long)opts.range_begin, (unsigned long long)opts.range_end);
+			print_ranges("sector", opts.range);
 			/* Convert to clusters */
-			opts.range_begin >>= (vol->cluster_size_bits - vol->sector_size_bits);
-			opts.range_end   >>= (vol->cluster_size_bits - vol->sector_size_bits);
-			result = cluster_find(vol, opts.range_begin, opts.range_end, (cluster_cb*)&print_match, NULL);
+			struct range *rng = opts.range;
+			while (rng) {
+				rng->begin >>= (vol->cluster_size_bits - vol->sector_size_bits);
+				rng->end   >>= (vol->cluster_size_bits - vol->sector_size_bits);
+				rng = rng->next;
+			}
+			result = cluster_find(vol, opts.range, (cluster_cb*)&print_match, NULL);
 			break;
 		case act_cluster:
-			if (opts.range_begin == opts.range_end)
-				ntfs_log_quiet("Searching for cluster %llu\n",
-						(unsigned long long)opts.range_begin);
-			else
-				ntfs_log_quiet("Searching for cluster range %llu-%llu\n", (unsigned long long)opts.range_begin, (unsigned long long)opts.range_end);
-			result = cluster_find(vol, opts.range_begin, opts.range_end, (cluster_cb*)&print_match, NULL);
+			print_ranges("cluster", opts.range);
+			result = cluster_find(vol, opts.range, (cluster_cb*)&print_match, NULL);
 			break;
 		case act_file:
 #ifdef HAVE_WINDOWS_H
@@ -551,7 +581,10 @@ int main(int argc, char *argv[])
 		case act_last:
 			memset(&m, 0, sizeof(m));
 			m.lcn = -1;
-			result = cluster_find(vol, 0, LONG_MAX, (cluster_cb*)&find_last, &m);
+			whole.next = NULL;
+			whole.begin = 0;
+			whole.end = LONG_MAX;
+			result = cluster_find(vol, &whole, (cluster_cb*)&find_last, &m);
 			if (m.lcn >= 0) {
 				ino = ntfs_inode_open(vol, m.inum);
 				if (ino) {

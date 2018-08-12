@@ -1,0 +1,4 @@
+#!/usr/bin/gawk -f
+/^#/ {next;}
+$3 == "-" { printf("-s 0x%x-0x%x ", strtonum($1), strtonum($1) + strtonum($2)) }
+{next;}
